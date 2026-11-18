@@ -2102,7 +2102,7 @@
         aupRaw,
         aupValue,
         status: struken ? 'Struken' : bokning,
-        include: validRank && !struken && regelgrupp === 'Advanced' && gren !== ''
+        include: validRank && !struken && gren !== '' && (regelgrupp === 'Advanced' || regelgrupp === '')
       });
     });
 
@@ -2162,7 +2162,7 @@
     const includedCount = importRows.filter(r => r.include).length;
 
     wrap.innerHTML = `
-      <p class="section-note" style="margin-top:18px;">Kontrollera tolkningen nedan. Bocka ur rader som inte ska räknas (t.ex. Beginner/Intermediate eller strukna) — de är redan avbockade automatiskt där det gick att avgöra.</p>
+      <p class="section-note" style="margin-top:18px;">Kontrollera tolkningen nedan. Klasser utan nivå i namnet (t.ex. Junior eller All Styles) räknas som rankingklasser. Strukna och ej genomförda (ITG) rader samt Beginner/Intermediate är avbockade automatiskt — bocka i dem om de ändå ska räknas.</p>
       <div class="table-scroll">
         <table class="import-table">
           <thead>
