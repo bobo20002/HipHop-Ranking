@@ -1406,6 +1406,7 @@
   let results = [];
   let idCounter = 1;
   let upResults = [];
+  let imports = []; // logg över importer, så att en import kan raderas i efterhand
   let upIdCounter = 1;
 
   const STORAGE_KEY = 'hiphop-ranking-data';
@@ -1441,12 +1442,12 @@
   function saveState(){
     if(READ_ONLY) return;
     try{
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ dancers, results, idCounter, upResults, upIdCounter }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ dancers, results, idCounter, upResults, upIdCounter, imports }));
     } catch(err){
       console.error('Kunde inte spara data lokalt', err);
     }
     if(firebaseDocRef){
-      firebaseDocRef.set({ dancers, results, idCounter, upResults, upIdCounter, updatedAt: Date.now() })
+      firebaseDocRef.set({ dancers, results, idCounter, upResults, upIdCounter, imports, updatedAt: Date.now() })
         .catch(err => console.error('Kunde inte synka till den delade databasen', err));
     }
   }
@@ -1459,6 +1460,7 @@
     upResults = Array.isArray(data.upResults) ? data.upResults : [];
     upIdCounter = typeof data.upIdCounter === 'number' ? data.upIdCounter :
       (upResults.length ? Math.max(...upResults.map(r => r.id)) + 1 : 1);
+    imports = Array.isArray(data.imports) ? data.imports : [];
   }
 
   function renderAllViews(){
@@ -1468,6 +1470,7 @@
     renderUpResults();
     renderUpOverview();
     renderUpPodium();
+    renderImportHistory();
   }
 
   function setSyncStatus(text, cls){
@@ -1492,7 +1495,7 @@
         if(doc.exists){
           applyStateData(doc.data());
           try{
-            localStorage.setItem(STORAGE_KEY, JSON.stringify({ dancers, results, idCounter, upResults, upIdCounter }));
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ dancers, results, idCounter, upResults, upIdCounter, imports }));
           } catch(err){}
           renderAllViews();
         }
@@ -2140,6 +2143,74 @@
     `;
   }
 
+
+  // ====== Importhistorik: ångra en import ======
+  function renderImportHistory(){
+    const wrap = document.getElementById('importHistoryWrap');
+    if(!wrap) return;
+
+    const items = [];
+    imports.forEach(imp => {
+      const rc = results.filter(r => r.importId === imp.id).length;
+      const uc = upResults.filter(r => r.importId === imp.id).length;
+      if(rc + uc > 0) items.push({ kind: 'import', key: imp.id, comp: imp.comp, at: imp.at, rc, uc });
+    });
+    // Äldre data utan import-id (importerat innan historiken fanns, eller registrerat för hand)
+    const legacy = {};
+    results.filter(r => !r.importId).forEach(r => { const k = r.comp || '(utan tävlingsnamn)'; (legacy[k] = legacy[k] || { rc: 0, uc: 0 }).rc++; });
+    upResults.filter(r => !r.importId).forEach(r => { const k = r.comp || '(utan tävlingsnamn)'; (legacy[k] = legacy[k] || { rc: 0, uc: 0 }).uc++; });
+    Object.entries(legacy).forEach(([comp, c]) => items.push({ kind: 'legacy', key: comp, comp, at: null, rc: c.rc, uc: c.uc }));
+
+    if(items.length === 0){
+      wrap.innerHTML = '<p class="empty">Inga registrerade tävlingar ännu.</p>';
+      return;
+    }
+    items.sort((a, b) => (b.at || 0) - (a.at || 0));
+    wrap.innerHTML = `
+      <div class="table-scroll">
+        <table class="import-table">
+          <thead><tr><th>Tävling</th><th>Importerad</th><th>Ranking</th><th>Uppflyttning</th><th></th></tr></thead>
+          <tbody>${items.map(it => `
+            <tr>
+              <td>${escapeHtml(it.comp)}${it.kind === 'legacy' ? '<div class="row-meta">äldre data / manuellt registrerat</div>' : ''}</td>
+              <td>${it.at ? escapeHtml(new Date(it.at).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' })) : '–'}</td>
+              <td>${it.rc} st</td>
+              <td>${it.uc} st</td>
+              <td><button class="btn-ghost" data-kind="${it.kind}" data-key="${escapeHtml(it.key)}" onclick="deleteImportFromButton(this)">Radera</button></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  function deleteImportFromButton(btn){
+    deleteImport(btn.dataset.kind, btn.dataset.key);
+  }
+
+  function deleteImport(kind, key){
+    const isImport = kind === 'import';
+    const match = r => isImport ? r.importId === key : (!r.importId && (r.comp || '(utan tävlingsnamn)') === key);
+    const rc = results.filter(match).length;
+    const uc = upResults.filter(match).length;
+    const name = isImport ? ((imports.find(i => i.id === key) || {}).comp || key) : key;
+    const extra = isImport ? '' : '\n\nObs: detta tar även bort resultat du registrerat för hand med samma tävlingsnamn.';
+    if(!confirm(`Radera "${name}"?\n\n${rc} rankingresultat och ${uc} uppflyttningsresultat tas bort. Det går inte att ångra.${extra}`)) return;
+
+    results = results.filter(r => !match(r));
+    upResults = upResults.filter(r => !match(r));
+
+    if(isImport){
+      const imp = imports.find(i => i.id === key);
+      (imp ? imp.newDancers || [] : []).forEach(n => {
+        const used = results.some(r => r.dancer === n) || upResults.some(r => r.dancer === n);
+        if(!used) dancers = dancers.filter(d => d !== n);
+      });
+      imports = imports.filter(i => i.id !== key);
+    }
+    renderAllViews();
+    saveState();
+  }
+
   function cancelImport(){
     importRows = [];
     document.getElementById('importPreviewWrap').innerHTML = '';
@@ -2154,9 +2225,12 @@
       (r.regelgrupp === 'Beginner' || r.regelgrupp === 'Intermediate'));
     if(toImport.length === 0 && upToImport.length === 0){ alert('Inga rader är ibockade för import, och ingen giltig UP-poäng hittades.'); return; }
 
+    const importId = 'imp-' + Date.now();
+    const newDancers = [];
     toImport.forEach(r => {
-      if(!dancers.includes(r.name)) dancers.push(r.name);
+      if(!dancers.includes(r.name)){ dancers.push(r.name); newDancers.push(r.name); }
       results.push({
+        importId,
         id: idCounter++,
         dancer: r.name,
         comp,
@@ -2168,9 +2242,10 @@
     });
 
     upToImport.forEach(r => {
-      if(!dancers.includes(r.name)) dancers.push(r.name);
+      if(!dancers.includes(r.name)){ dancers.push(r.name); newDancers.push(r.name); }
       const deltagare = r.deltagare || null;
       upResults.push({
+        importId,
         id: upIdCounter++,
         dancer: r.name,
         comp,
@@ -2187,9 +2262,10 @@
       });
     });
 
+    imports.push({ id: importId, comp, at: Date.now(), rankingCount: toImport.length, upCount: upToImport.length, newDancers });
     importRows = [];
     document.getElementById('importPreviewWrap').innerHTML =
-      `<p class="section-note">Importerade ${toImport.length} ranking-resultat och ${upToImport.length} uppflyttningsresultat (från UP-kolumnen).</p>`;
+      `<p class="section-note">Importerade ${toImport.length} ranking-resultat och ${upToImport.length} uppflyttningsresultat (från UP-kolumnen). Blev det fel kan du radera importen under Importhistorik nedan.</p>`;
     document.getElementById('csvFileInput').value = '';
     renderDancers();
     renderResults();
